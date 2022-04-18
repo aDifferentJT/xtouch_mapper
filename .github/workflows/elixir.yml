@@ -13,8 +13,11 @@ jobs:
   build:
 
     name: Build and test
-    runs-on: ubuntu-latest
-
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
     steps:
     - uses: actions/checkout@v3
     - name: Set up Elixir
@@ -32,3 +35,5 @@ jobs:
       run: mix deps.get
     - name: Run tests
       run: mix test
+    - name: Build release
+      run: mix release
