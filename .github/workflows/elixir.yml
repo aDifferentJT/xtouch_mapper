@@ -36,4 +36,4 @@ jobs:
     - name: Build release
       run: mix release
     - name: ls
-      run: ls build
+      run: ls
