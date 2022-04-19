@@ -63,8 +63,8 @@ jobs:
     - name: Upload artifact
       uses: actions/upload-artifact@v2
       with:
-        name: release_${{ runner.os }}
-        path: ${{github.workspace}}/release/*
+        name: xtouch_mapper_${{ runner.os }}
+        path: ${{github.workspace}}/_build/prod/rel/xtouch_mapper
 
     - name: GH Release
       if: startsWith(github.ref, 'refs/tags')
