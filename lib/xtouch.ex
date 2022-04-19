@@ -103,8 +103,15 @@ defmodule Xtouch do
     GenServer.start_link(__MODULE__, state, name: __MODULE__)
   end
 
+  @impl MidiServer
   def init2(_) do
     {:ok, %{depressed_buttons: MapSet.new()}}
+  end
+
+  @impl MidiServer
+  def on_connect(state) do
+    send(Mapper, :refresh)
+    state
   end
 
   def handle_event2(
@@ -167,20 +174,34 @@ defmodule Xtouch do
 
   def handle_event1(event, state), do: handle_event2(event, state)
 
+  @impl MidiServer
   def handle_midi_command(_delta_time, command, state) do
     handle_event1(decode_midi_command(command), state)
   end
 
+  @impl GenServer
+  def handle_cast({:set_led_ring, ch, centre, mode, value}, state) do
+    GenServer.cast(
+      self(),
+      {:send_midi_commands, [{0, set_led_ring(ch, centre, mode, value)}]}
+    )
+
+    {:noreply, state}
+  end
+
+  @impl GenServer
   def handle_cast({:set_lcd, ch, text1, text2}, state) do
     GenServer.cast(self(), {:send_midi_commands, Enum.map(set_lcd(ch, text1, text2), &{0, &1})})
     {:noreply, state}
   end
 
+  @impl GenServer
   def handle_cast({:set_button, ch, type, value}, state) do
     GenServer.cast(self(), {:send_midi_commands, [{0, set_button_led(ch, type, value)}]})
     {:noreply, state}
   end
 
+  @impl GenServer
   def handle_cast({:set_fader, ch, value}, state) do
     GenServer.cast(self(), {:send_midi_commands, [{0, set_fader(ch, value)}]})
     {:noreply, state}

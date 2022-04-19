@@ -260,7 +260,7 @@ defmodule Midi do
   def decode_rtp(data) do
     {header, data} = RTP.Header.decode(data)
 
-    {journalling, delta_time_0, p, list, data} =
+    {_journalling, delta_time_0, _p, list, data} =
       case data do
         <<0::1, journalling::1, delta_time_0::1, p::1, len::4, list::binary-size(len),
           data::binary>> ->
@@ -284,7 +284,7 @@ defmodule Midi do
 
         data ->
           case decode_delta_time(data) do
-            {delta_time, <<>>} ->
+            {_delta_time, <<>>} ->
               nil
 
             {delta_time, data} ->
@@ -292,6 +292,8 @@ defmodule Midi do
               {{delta_time, message}, data}
           end
       end)
+
+    _ = data
 
     {header, commands}
   end

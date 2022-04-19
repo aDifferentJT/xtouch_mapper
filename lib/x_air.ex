@@ -43,29 +43,85 @@ defmodule XAir do
     Enum.map(list_channels_full(), fn {ch, _} -> ch end)
   end
 
-  def standing_replies_ch(ch, "/mix/on", [value]) do
+  defp get_address({:channel_name, ch}, state, callback) do
+    callback.(ch <> "/config/name", state)
+  end
+
+  defp get_address({:gain, ch}, state, callback) do
+    get_input_src(ch, state, fn
+      nil, state ->
+        callback.(nil, state)
+
+      in_src, state ->
+        address = "/headamp/" <> String.pad_leading(Integer.to_string(in_src), 2, "0") <> "/gain"
+
+        callback.(address, state)
+    end)
+  end
+
+  defp get_address({:solo, ch}, state, callback) do
+    {_, ch} =
+      Enum.find(list_channels_full(), fn
+        {^ch, _} -> true
+        _ -> false
+      end)
+
+    callback.("/-stat/solosw/" <> String.pad_leading(Integer.to_string(ch), 2, "0"), state)
+  end
+
+  defp get_address({:mute, ch}, state, callback) do
+    callback.(ch <> "/mix/on", state)
+  end
+
+  defp get_address({:mix_fader, ch}, state, callback) do
+    callback.(ch <> "/mix/fader", state)
+  end
+
+  defp process_value_send(:solo, value), do: bool_to_int(value)
+  defp process_value_send(:mute, value), do: bool_to_int(!value)
+  defp process_value_send(_type, value), do: value
+
+  defp process_value_recv(:solo, value), do: int_to_bool(value)
+  defp process_value_recv(:mute, value), do: !int_to_bool(value)
+  defp process_value_recv(_type, value), do: value
+
+  defp standing_replies_ch(ch, "/config/name", [value]) do
+    GenServer.cast(Mapper, {:channel_name, :xair, ch, value})
+  end
+
+  defp standing_replies_ch(ch, "/mix/on", [value]) do
     GenServer.cast(Mapper, {:mute, :xair, ch, !int_to_bool(value)})
   end
 
-  def standing_replies_ch(ch, "/mix/fader", [value]) do
+  defp standing_replies_ch(ch, "/mix/fader", [value]) do
     GenServer.cast(Mapper, {:fader_moved, :xair, ch, value})
   end
 
-  def standing_replies_ch(_, _, _), do: nil
+  defp standing_replies_ch(_, _, _), do: nil
 
-  def standing_replies(<<"/ch/", ch::binary-size(2), param::binary>>, args) do
+  defp standing_replies(<<"/ch/", ch::binary-size(2), param::binary>>, args) do
     standing_replies_ch("/ch/" <> ch, param, args)
   end
 
-  def standing_replies(<<"/rtn/aux", param::binary>>, args) do
+  defp standing_replies(<<"/rtn/aux", param::binary>>, args) do
     standing_replies_ch("/rtn/aux", param, args)
   end
 
-  def standing_replies(<<"/bus/", bus::binary-size(1), param::binary>>, args) do
-    standing_replies_ch("/rtn/aux", param, args)
+  defp standing_replies(<<"/bus/", bus::binary-size(1), param::binary>>, args) do
+    standing_replies_ch("/bus/" <> bus, param, args)
   end
 
-  def standing_replies(<<"/-stat/solosw/", ch::binary-size(2)>>, [value]) do
+  defp standing_replies(<<"/lr", param::binary>>, args) do
+    standing_replies_ch("/lr", param, args)
+  end
+
+  defp standing_replies(<<"/headamp/", ch::binary-size(2), "/gain">>, [value]) do
+    {ch, _} = Integer.parse(ch)
+
+    GenServer.cast(Mapper, {:gain, :xair, ch, value})
+  end
+
+  defp standing_replies(<<"/-stat/solosw/", ch::binary-size(2)>>, [value]) do
     {ch, _} = Integer.parse(ch)
 
     case Enum.find(list_channels_full(), fn {_, solo_ch} -> solo_ch == ch end) do
@@ -77,12 +133,42 @@ defmodule XAir do
     end
   end
 
-  def standing_replies(_, _), do: nil
+  defp standing_replies(_, _), do: nil
+
+  defp send(address, args, %{socket: socket, ip: ip}) do
+    :gen_udp.send(
+      socket,
+      ip,
+      @port,
+      Osc.encode_message(address, args)
+    )
+  end
+
+  defp get_input_src(
+         ch = <<"/ch/", _::binary>>,
+         state = %{waiting_replies: waiting_replies},
+         callback
+       ) do
+    address = ch <> "/config/insrc"
+
+    :ok = send(address, [], state)
+
+    on_reply = fn [in_src], state ->
+      callback.(in_src + 1, state)
+    end
+
+    waiting_replies = Map.update(waiting_replies, address, [on_reply], &[on_reply | &1])
+
+    %{state | waiting_replies: waiting_replies}
+  end
+
+  defp get_input_src(_ch, state, callback), do: callback.(nil, state)
 
   def start_link(state) do
     GenServer.start_link(__MODULE__, state, name: __MODULE__)
   end
 
+  @impl GenServer
   def init(ip) do
     {:ok, socket} = :gen_udp.open(0, [:binary, active: true])
 
@@ -91,167 +177,111 @@ defmodule XAir do
     {:ok, %{socket: socket, ip: ip, timer: timer, waiting_replies: %{}}}
   end
 
+  @impl GenServer
   def handle_call(
         {:channel_name, ch},
         from,
-        state = %{socket: socket, ip: ip, waiting_replies: waiting_replies}
+        state = %{waiting_replies: waiting_replies}
       ) do
     address = ch <> "/config/name"
 
-    :gen_udp.send(
-      socket,
-      ip,
-      @port,
-      Osc.encode_message(address, [])
-    )
+    :ok = send(address, [], state)
 
-    on_reply = fn [name] -> GenServer.reply(from, name) end
+    on_reply = fn [name], state ->
+      GenServer.reply(from, name)
+      state
+    end
+
     waiting_replies = Map.update(waiting_replies, address, [on_reply], &[on_reply | &1])
 
     {:noreply, %{state | waiting_replies: waiting_replies}}
   end
 
-  def handle_call(
-        {:solo, ch},
-        from,
-        state = %{socket: socket, ip: ip, waiting_replies: waiting_replies}
-      ) do
-    {_, ch} =
-      Enum.find(list_channels_full(), fn
-        {^ch, _} -> true
-        _ -> false
+  @impl GenServer
+  def handle_call({:input_src, ch}, from, state) do
+    state =
+      get_input_src(ch, state, fn in_src, state ->
+        GenServer.reply(from, in_src)
+        state
       end)
 
-    address = "/-stat/solosw/" <> String.pad_leading(Integer.to_string(ch), 2, "0")
-
-    :gen_udp.send(
-      socket,
-      ip,
-      @port,
-      Osc.encode_message(address, [])
-    )
-
-    on_reply = fn [solo] -> GenServer.reply(from, int_to_bool(solo)) end
-
-    waiting_replies = Map.update(waiting_replies, address, [on_reply], &[on_reply | &1])
-
-    {:noreply, %{state | waiting_replies: waiting_replies}}
+    {:noreply, state}
   end
 
+  @impl GenServer
   def handle_call(
-        {:mute, ch},
+        {type, ch},
         from,
-        state = %{socket: socket, ip: ip, waiting_replies: waiting_replies}
+        state = %{waiting_replies: waiting_replies}
       ) do
-    address = ch <> "/mix/on"
+    state =
+      get_address({type, ch}, state, fn
+        nil, state ->
+          GenServer.reply(from, nil)
+          state
 
-    :gen_udp.send(
-      socket,
-      ip,
-      @port,
-      Osc.encode_message(address, [])
-    )
+        address, state ->
+          :ok = send(address, [], state)
 
-    on_reply = fn [on] -> GenServer.reply(from, !int_to_bool(on)) end
+          on_reply = fn [value], state ->
+            GenServer.reply(from, process_value_recv(type, value))
+            state
+          end
 
-    waiting_replies = Map.update(waiting_replies, address, [on_reply], &[on_reply | &1])
+          waiting_replies = Map.update(waiting_replies, address, [on_reply], &[on_reply | &1])
 
-    {:noreply, %{state | waiting_replies: waiting_replies}}
-  end
-
-  def handle_call(
-        {:mix_fader, ch},
-        from,
-        state = %{socket: socket, ip: ip, waiting_replies: waiting_replies}
-      ) do
-    address = ch <> "/mix/fader"
-
-    :gen_udp.send(
-      socket,
-      ip,
-      @port,
-      Osc.encode_message(address, [])
-    )
-
-    on_reply = fn [level] -> GenServer.reply(from, level) end
-    waiting_replies = Map.update(waiting_replies, address, [on_reply], &[on_reply | &1])
-
-    {:noreply, %{state | waiting_replies: waiting_replies}}
-  end
-
-  def handle_cast(
-        {:solo, ch, value},
-        state = %{socket: socket, ip: ip}
-      ) do
-    {_, ch} =
-      Enum.find(list_channels_full(), fn
-        {^ch, _} -> true
-        _ -> false
+          %{state | waiting_replies: waiting_replies}
       end)
 
-    address = "/-stat/solosw/" <> String.pad_leading(Integer.to_string(ch), 2, "0")
+    {:noreply, state}
+  end
 
-    :gen_udp.send(
-      socket,
-      ip,
-      @port,
-      Osc.encode_message(address, [bool_to_int(value)])
-    )
+  @impl GenServer
+  def handle_cast({type, ch}, state) do
+    state =
+      get_address({type, ch}, state, fn
+        nil, state ->
+          state
+
+        address, state ->
+          :ok = send(address, [], state)
+          state
+      end)
 
     {:noreply, state}
   end
 
-  def handle_cast(
-        {:mute, ch, value},
-        state = %{socket: socket, ip: ip}
-      ) do
-    address = ch <> "/mix/on"
+  @impl GenServer
+  def handle_cast({type, ch, value}, state) do
+    state =
+      get_address({type, ch}, state, fn
+        nil, state ->
+          state
 
-    :gen_udp.send(
-      socket,
-      ip,
-      @port,
-      Osc.encode_message(address, [bool_to_int(!value)])
-    )
-
-    {:noreply, state}
-  end
-
-  def handle_cast(
-        {:mix_fader, ch, value},
-        state = %{socket: socket, ip: ip}
-      ) do
-    address = ch <> "/mix/fader"
-
-    :gen_udp.send(
-      socket,
-      ip,
-      @port,
-      Osc.encode_message(address, [value])
-    )
+        address, state ->
+          :ok = send(address, [process_value_send(type, value)], state)
+          state
+      end)
 
     {:noreply, state}
   end
 
+  @impl GenServer
   def handle_info(
-        {:udp, socket, address, _, data},
+        {:udp, _, _, _, data},
         state = %{waiting_replies: waiting_replies}
       ) do
     {address, arguments} = Osc.decode_message(data)
     standing_replies(address, arguments)
     {replies, waiting_replies} = Map.pop(waiting_replies, address, [])
-    Enum.each(replies, & &1.(arguments))
-    {:noreply, %{state | waiting_replies: waiting_replies}}
+    state = %{state | waiting_replies: waiting_replies}
+    state = Enum.reduce(replies, state, & &1.(arguments, &2))
+    {:noreply, state}
   end
 
-  def handle_info(:remote, state = %{socket: socket, ip: ip}) do
-    :gen_udp.send(
-      socket,
-      ip,
-      @port,
-      Osc.encode_message("/xremote", [])
-    )
-
+  @impl GenServer
+  def handle_info(:remote, state) do
+    :ok = send("/xremote", [], state)
     {:noreply, state}
   end
 end

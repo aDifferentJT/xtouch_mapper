@@ -6,7 +6,7 @@ defmodule XtouchMapper do
   def start(_type, _args) do
     children = [
       Xtouch,
-      {XAir, {192, 168, 241, 14}},
+      {XAir, {192, 168, 240, 253}},
       Mapper
     ]
 

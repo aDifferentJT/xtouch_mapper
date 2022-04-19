@@ -8,6 +8,16 @@ defmodule XtouchMapper.MixProject do
       elixir: "~> 1.13",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
+      dialyzer: [
+        flags: [
+          :error_handling,
+          :race_conditions,
+          :unknown,
+          :unmatched_returns,
+          :overspecs,
+          :no_match
+        ]
+      ],
       releases: [xtouch_mapper: []]
     ]
   end

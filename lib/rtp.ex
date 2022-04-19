@@ -52,7 +52,7 @@ defmodule RTP do
     end
 
     def decode(
-          <<version::2, padding::1, extension_flag::1, csrc_count::4, marker::1, payload_type::7,
+          <<_version::2, padding::1, extension_flag::1, csrc_count::4, marker::1, payload_type::7,
             sequence_number::16, timestamp::32, ssrc::32, csrcs::binary-size(csrc_count)-unit(32),
             rest::bitstring>>
         ) do

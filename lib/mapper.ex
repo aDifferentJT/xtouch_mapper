@@ -1,5 +1,6 @@
 defmodule Mapper do
   use GenServer
+  require Logger
 
   defp xair_channel(:xair, channel, _channels), do: channel
   defp xair_channel(:xtouch, channel, channels), do: Enum.at(channels, channel)
@@ -17,27 +18,36 @@ defmodule Mapper do
     GenServer.start_link(__MODULE__, state, name: __MODULE__)
   end
 
+  @impl GenServer
   def init(_) do
     channels = Enum.slice(XAir.list_channels(), 0, 8)
-    {:ok, %{channels: channels}}
+
+    {:ok, timer} = :timer.send_interval(5000, :refresh)
+
+    {:ok, %{channels: channels, timer: timer}}
   end
 
-  def handle_cast(:refresh, state = %{channels: channels}) do
-    Enum.with_index(channels, fn channel, index ->
-      name = GenServer.call(XAir, {:channel_name, channel})
-      solo = GenServer.call(XAir, {:solo, channel})
-      mute = GenServer.call(XAir, {:mute, channel})
-      fader = GenServer.call(XAir, {:mix_fader, channel})
-      IO.inspect({channel, fader})
-      GenServer.cast(Xtouch, {:set_lcd, index, name, ""})
-      GenServer.cast(Xtouch, {:set_button, index, :solo, solo})
-      GenServer.cast(Xtouch, {:set_button, index, :mute, mute})
-      GenServer.cast(Xtouch, {:set_fader, index, fader})
-    end)
+  @impl GenServer
+  def handle_info(:refresh, state = %{channels: channels}) do
+    _ =
+      Enum.with_index(channels, fn channel, index ->
+        GenServer.cast(XAir, {:gain, channel})
+        GenServer.cast(XAir, {:channel_name, channel})
+        GenServer.cast(XAir, {:solo, channel})
+        GenServer.cast(XAir, {:mute, channel})
+        GenServer.cast(XAir, {:mix_fader, channel})
+      end)
 
     {:noreply, state}
   end
 
+  @impl GenServer
+  # Timed-out call
+  def handle_info({_, _}, state) do
+    {:noreply, state}
+  end
+
+  @impl GenServer
   def handle_cast({:increment_channel, ch, by}, state = %{channels: channels}) do
     channels =
       List.update_at(channels, ch, fn channel ->
@@ -46,22 +56,78 @@ defmodule Mapper do
         Enum.at(channel_list, rem(current_index + by, Enum.count(channel_list)))
       end)
 
-    GenServer.cast(self, :refresh)
+    GenServer.cast(Xtouch, {:set_lcd, ch, Enum.at(channels, ch), ""})
+
+    send(self(), :refresh)
 
     {:noreply, %{state | channels: channels}}
   end
 
-  def handle_cast({:increment_gain, source, channel, value}, state = %{channels: channels}) do
+  @impl GenServer
+  def handle_cast({:channel_name, source, channel, value}, state = %{channels: channels}) do
     xair_channel = xair_channel(source, channel, channels)
     xtouch_indices = xtouch_indices(xair_channel, channels)
 
-    current_gain = GenServer.call(XAir, {:gain, xair_channel})
-    new_gain = current_gain + value
-    #GenServer.cast(XAir, {:solo, xair_channel, new_solo})
+    value =
+      case value do
+        "" -> xair_channel
+        value -> value
+      end
+
+    Enum.each(
+      xtouch_indices,
+      &GenServer.cast(Xtouch, {:set_lcd, &1, value, ""})
+    )
+
+    if source != :xair, do: GenServer.cast(XAir, {:channel_name, xair_channel, value})
 
     {:noreply, state}
   end
 
+  @impl GenServer
+  def handle_cast({:gain, source, headamp_channel, value}, state = %{channels: channels}) do
+    xtouch_indices =
+      channels
+      |> Enum.with_index(fn ch, index ->
+        try do
+          if GenServer.call(XAir, {:input_src, ch}, 100) == headamp_channel, do: index
+        catch
+          :exit, {:timeout, _} ->
+            Logger.info("get_input_src timed out")
+            nil
+        end
+      end)
+      |> Enum.filter(&(&1 != nil))
+
+    xtouch_value = round(value * 10) + 1
+
+    Enum.each(
+      xtouch_indices,
+      &GenServer.cast(Xtouch, {:set_led_ring, &1, false, :single_dot, xtouch_value})
+    )
+
+    {:noreply, state}
+  end
+
+  @impl GenServer
+  def handle_cast({:increment_gain, source, channel, value}, state = %{channels: channels}) do
+    xair_channel = xair_channel(source, channel, channels)
+
+    value = value / 144
+
+    case GenServer.call(XAir, {:gain, xair_channel}) do
+      nil ->
+        nil
+
+      current_gain ->
+        new_gain = current_gain + value
+        GenServer.cast(XAir, {:gain, xair_channel, new_gain})
+    end
+
+    {:noreply, state}
+  end
+
+  @impl GenServer
   def handle_cast({:solo, source, channel, value}, state = %{channels: channels}) do
     xair_channel = xair_channel(source, channel, channels)
     xtouch_indices = xtouch_indices(xair_channel, channels)
@@ -76,6 +142,7 @@ defmodule Mapper do
     {:noreply, state}
   end
 
+  @impl GenServer
   def handle_cast({:toggle_solo_channel, source, channel}, state = %{channels: channels}) do
     xair_channel = xair_channel(source, channel, channels)
 
@@ -86,6 +153,7 @@ defmodule Mapper do
     {:noreply, state}
   end
 
+  @impl GenServer
   def handle_cast({:mute, source, channel, value}, state = %{channels: channels}) do
     xair_channel = xair_channel(source, channel, channels)
     xtouch_indices = xtouch_indices(xair_channel, channels)
@@ -100,6 +168,7 @@ defmodule Mapper do
     {:noreply, state}
   end
 
+  @impl GenServer
   def handle_cast({:toggle_mute_channel, source, channel}, state = %{channels: channels}) do
     xair_channel = xair_channel(source, channel, channels)
 
@@ -110,6 +179,7 @@ defmodule Mapper do
     {:noreply, state}
   end
 
+  @impl GenServer
   def handle_cast({:fader_moved, source, channel, value}, state = %{channels: channels}) do
     xair_channel = xair_channel(source, channel, channels)
     xtouch_indices = xtouch_indices(xair_channel, channels)

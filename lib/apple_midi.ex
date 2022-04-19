@@ -12,7 +12,7 @@ defmodule AppleMidi do
   end
 
   def decode_timestamp_sync(
-        <<0xFF, 0xFF, "CK", _sender_ssrc::32, 0::8, padding::24, timestamp1::64, timestamp2::64,
+        <<0xFF, 0xFF, "CK", _sender_ssrc::32, 0::8, padding::24, timestamp1::64, _timestamp2::64,
           timestamp3::64>>,
         ssrc,
         current_timestamp
@@ -24,7 +24,7 @@ defmodule AppleMidi do
 
   def decode_timestamp_sync(
         <<0xFF, 0xFF, "CK", _sender_ssrc::32, 1::8, padding::24, timestamp1::64, timestamp2::64,
-          timestamp3::64>>,
+          _timestamp3::64>>,
         ssrc,
         current_timestamp
       ) do
@@ -37,7 +37,7 @@ defmodule AppleMidi do
         <<0xFF, 0xFF, "CK", _sender_ssrc::32, 2::8, _padding::24, timestamp1::64, timestamp2::64,
           timestamp3::64>>,
         _ssrc,
-        current_timestamp
+        _current_timestamp
       ) do
     {:offset, (timestamp3 + timestamp1) / 2 - timestamp2}
   end
