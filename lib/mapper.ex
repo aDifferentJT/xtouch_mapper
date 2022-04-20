@@ -6,7 +6,7 @@ defmodule Mapper do
     base =
       case :os.type() do
         {:unix, _} -> :filename.join(System.get_env("HOME"), ".config")
-        {:win32, _} -> System.get_env("%APPDATA%")
+        {:win32, _} -> System.get_env("APPDATA")
       end
 
     :filename.join(base, "xtouch_mapper")
