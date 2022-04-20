@@ -77,13 +77,21 @@ defmodule XAir do
     callback.(ch <> "/mix/fader", state)
   end
 
-  defp process_value_send(:solo, value), do: bool_to_int(value)
-  defp process_value_send(:mute, value), do: bool_to_int(!value)
-  defp process_value_send(_type, value), do: value
+  defp get_address(:snapshot_index, state, callback) do
+    callback.("/-snap/index", state)
+  end
 
-  defp process_value_recv(:solo, value), do: int_to_bool(value)
-  defp process_value_recv(:mute, value), do: !int_to_bool(value)
-  defp process_value_recv(_type, value), do: value
+  defp get_address({:snapshot_name, index}, state, callback) do
+    callback.("/-snap/" <> String.pad_leading(Integer.to_string(index), 2, "0") <> "/name", state)
+  end
+
+  defp process_value_send({:solo, _}, value), do: bool_to_int(value)
+  defp process_value_send({:mute, _}, value), do: bool_to_int(!value)
+  defp process_value_send(_key, value), do: value
+
+  defp process_value_recv({:solo, _}, value), do: int_to_bool(value)
+  defp process_value_recv({:mute, _}, value), do: !int_to_bool(value)
+  defp process_value_recv(_key, value), do: value
 
   defp standing_replies_ch(ch, "/config/name", [value]) do
     GenServer.cast(Mapper, {:channel_name, :xair, ch, value})
@@ -133,6 +141,15 @@ defmodule XAir do
     end
   end
 
+  defp standing_replies("/-snap/index", [value]) do
+    GenServer.cast(Mapper, {:snapshot_index, :xair, value})
+  end
+
+  defp standing_replies(<<"/-snap/", index::binary-size(2), "/name">>, [value]) do
+    {index, _} = Integer.parse(index)
+    GenServer.cast(Mapper, {:snapshot_name, :xair, index, value})
+  end
+
   defp standing_replies(_, _), do: nil
 
   defp send(address, args, %{socket: socket, ip: ip}) do
@@ -178,27 +195,7 @@ defmodule XAir do
   end
 
   @impl GenServer
-  def handle_call(
-        {:channel_name, ch},
-        from,
-        state = %{waiting_replies: waiting_replies}
-      ) do
-    address = ch <> "/config/name"
-
-    :ok = send(address, [], state)
-
-    on_reply = fn [name], state ->
-      GenServer.reply(from, name)
-      state
-    end
-
-    waiting_replies = Map.update(waiting_replies, address, [on_reply], &[on_reply | &1])
-
-    {:noreply, %{state | waiting_replies: waiting_replies}}
-  end
-
-  @impl GenServer
-  def handle_call({:input_src, ch}, from, state) do
+  def handle_call({:get, {:input_src, ch}}, from, state) do
     state =
       get_input_src(ch, state, fn in_src, state ->
         GenServer.reply(from, in_src)
@@ -210,12 +207,12 @@ defmodule XAir do
 
   @impl GenServer
   def handle_call(
-        {type, ch},
+        {:get, key},
         from,
         state = %{waiting_replies: waiting_replies}
       ) do
     state =
-      get_address({type, ch}, state, fn
+      get_address(key, state, fn
         nil, state ->
           GenServer.reply(from, nil)
           state
@@ -224,7 +221,7 @@ defmodule XAir do
           :ok = send(address, [], state)
 
           on_reply = fn [value], state ->
-            GenServer.reply(from, process_value_recv(type, value))
+            GenServer.reply(from, process_value_recv(key, value))
             state
           end
 
@@ -237,9 +234,15 @@ defmodule XAir do
   end
 
   @impl GenServer
-  def handle_cast({type, ch}, state) do
+  def handle_cast({:recall_snapshot, index}, state) do
+    :ok = send("/-snap/load", [index], state)
+    {:noreply, state}
+  end
+
+  @impl GenServer
+  def handle_cast({:refresh, key}, state) do
     state =
-      get_address({type, ch}, state, fn
+      get_address(key, state, fn
         nil, state ->
           state
 
@@ -252,14 +255,14 @@ defmodule XAir do
   end
 
   @impl GenServer
-  def handle_cast({type, ch, value}, state) do
+  def handle_cast({:set, key, value}, state) do
     state =
-      get_address({type, ch}, state, fn
+      get_address(key, state, fn
         nil, state ->
           state
 
         address, state ->
-          :ok = send(address, [process_value_send(type, value)], state)
+          :ok = send(address, [process_value_send(key, value)], state)
           state
       end)
 

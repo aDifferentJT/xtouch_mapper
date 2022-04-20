@@ -96,7 +96,6 @@ defmodule MidiServer do
               state
 
             {:offset, offset} ->
-              Logger.info("Timestamp offset is #{offset}")
               %{state | offset: offset}
           end
 

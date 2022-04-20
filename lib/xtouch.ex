@@ -128,6 +128,22 @@ defmodule Xtouch do
   end
 
   def handle_event2(
+        {:button, 0, :rec, :down},
+        state
+      ) do
+    GenServer.cast(Mapper, :toggle_recall_mode)
+    {:ok, state}
+  end
+
+  def handle_event2(
+        {:button, index, :rec, :down},
+        state
+      ) do
+    GenServer.cast(Mapper, {:recall, index})
+    {:ok, state}
+  end
+
+  def handle_event2(
         {:button, channel, :solo, :down},
         state
       ) do
@@ -150,11 +166,7 @@ defmodule Xtouch do
     {:ok, state}
   end
 
-  def handle_event2(command, state = %{depressed_buttons: depressed_buttons}) do
-    IO.inspect(command)
-    IO.inspect(depressed_buttons)
-    {:ok, state}
-  end
+  def handle_event2(command, state = %{depressed_buttons: depressed_buttons}), do: {:ok, state}
 
   def handle_event1(
         event = {:button, channel, type, :down},
